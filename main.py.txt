@@ -1,0 +1,225 @@
+import discord
+from discord.ext import commands
+import os
+
+TOKEN = os.getenv("TOKEN")
+
+# =========================
+# チャンネルID
+# =========================
+
+TEMP_PROFILE_CHANNEL_ID = 1545954792545722428
+
+MALE_PROFILE_CHANNEL_ID = 1545400873881178194
+FEMALE_PROFILE_CHANNEL_ID = 1545400987752341625
+
+FULL_PROFILE_CHANNEL_IDS = {
+    MALE_PROFILE_CHANNEL_ID,
+    FEMALE_PROFILE_CHANNEL_ID
+}
+
+# =========================
+# Bot設定
+# =========================
+
+intents = discord.Intents.default()
+intents.members = True
+intents.message_content = True
+intents.reactions = True
+
+bot = commands.Bot(
+    command_prefix="!",
+    intents=intents
+)
+
+
+# =========================
+# 起動確認
+# =========================
+
+@bot.event
+async def on_ready():
+    print(f"ログインしました: {bot.user}")
+    print("仮プロフィール管理Bot 起動完了")
+
+
+# =========================
+# メッセージ監視
+# =========================
+
+@bot.event
+async def on_message(message):
+
+    # Bot自身のメッセージは無視
+    if message.author.bot:
+        return
+
+    # -------------------------
+    # 仮プロフィールが投稿された
+    # -------------------------
+
+    if message.channel.id == TEMP_PROFILE_CHANNEL_ID:
+
+        guide = await message.reply(
+            "📝 **プロフィールの記入が完了したら ☑️ を押してください♡**\n\n"
+            "運営がプロフィールを確認します。\n"
+            "審査通過後、本プロフィール置き場が表示されます。\n\n"
+            "表示されたら、こちらの仮プロフィールをコピーして\n"
+            "本プロフィールへ投稿してください。",
+            mention_author=False
+        )
+
+        # Botの案内にチェックを付ける
+        await guide.add_reaction("☑️")
+
+    # -------------------------
+    # 本プロフィールが投稿された
+    # -------------------------
+
+    elif message.channel.id in FULL_PROFILE_CHANNEL_IDS:
+
+        await delete_temp_profile(message.author)
+
+    await bot.process_commands(message)
+
+
+# =========================
+# ☑️リアクション処理
+# =========================
+
+@bot.event
+async def on_raw_reaction_add(payload):
+
+    # Bot自身のリアクションは無視
+    if bot.user and payload.user_id == bot.user.id:
+        return
+
+    if str(payload.emoji) != "☑️":
+        return
+
+    if payload.channel_id != TEMP_PROFILE_CHANNEL_ID:
+        return
+
+    channel = bot.get_channel(payload.channel_id)
+
+    if channel is None:
+        return
+
+    try:
+        guide_message = await channel.fetch_message(payload.message_id)
+    except discord.NotFound:
+        return
+
+    # Rien botが送った案内以外は対象外
+    if guide_message.author.id != bot.user.id:
+        return
+
+    # 返信先がない場合は無視
+    if guide_message.reference is None:
+        return
+
+    try:
+        profile_message = await channel.fetch_message(
+            guide_message.reference.message_id
+        )
+    except discord.NotFound:
+        return
+
+    # プロフィールを書いた本人か確認
+    if payload.user_id != profile_message.author.id:
+
+        try:
+            user = await bot.fetch_user(payload.user_id)
+
+            await guide_message.remove_reaction(
+                payload.emoji,
+                user
+            )
+
+        except Exception:
+            pass
+
+        return
+
+    # 本人が☑️を押した場合
+    try:
+        await guide_message.edit(
+            content=
+            "☑️ **プロフィールの記入完了を受け付けました♡**\n\n"
+            "現在、運営の確認待ちです。\n"
+            "審査通過後、本プロフィール置き場が表示されます。\n\n"
+            "表示されたら、この仮プロフィールをコピーして\n"
+            "本プロフィールへ投稿してください。"
+        )
+
+    except Exception as e:
+        print(f"案内更新エラー: {e}")
+
+
+# =========================
+# 仮プロフィール削除
+# =========================
+
+async def delete_temp_profile(member):
+
+    temp_channel = bot.get_channel(TEMP_PROFILE_CHANNEL_ID)
+
+    if temp_channel is None:
+        print("仮プロフィールチャンネルが見つかりません")
+        return
+
+    profile_message = None
+    guide_message = None
+
+    # 仮プロフィールを探す
+    async for msg in temp_channel.history(limit=500):
+
+        if msg.author.id == member.id and not msg.author.bot:
+
+            profile_message = msg
+
+            # この投稿に返信しているBot案内を探す
+            async for bot_msg in temp_channel.history(
+                limit=500,
+                after=msg.created_at
+            ):
+
+                if (
+                    bot_msg.author.id == bot.user.id
+                    and bot_msg.reference
+                    and bot_msg.reference.message_id == msg.id
+                ):
+                    guide_message = bot_msg
+                    break
+
+            break
+
+    # Bot案内削除
+    if guide_message:
+        try:
+            await guide_message.delete()
+        except discord.NotFound:
+            pass
+        except discord.Forbidden:
+            print("Bot案内を削除する権限がありません")
+
+    # 仮プロフィール削除
+    if profile_message:
+        try:
+            await profile_message.delete()
+
+            print(
+                f"{member} の仮プロフィールを削除しました"
+            )
+
+        except discord.NotFound:
+            pass
+        except discord.Forbidden:
+            print("仮プロフィールを削除する権限がありません")
+
+
+# =========================
+# Bot起動
+# =========================
+
+bot.run(TOKEN)
